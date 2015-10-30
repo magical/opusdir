@@ -37,7 +37,10 @@ def main():
         dirs.sort() # traverse dirs in alphabetical order
         files.sort()
         destdir = replacepath(dirname, args.source, args.dest)
-        actions += dodir(sourcedir, destdir, files)
+        subactions = dodir(sourcedir, destdir, files)
+        if subactions and not os.path.exists(destdir):
+            actions.append(mkdir(destdir))
+        actions += subactions
 
     if args.dry_run:
         for action in actions:
@@ -45,16 +48,33 @@ def main():
         return
 
     for action in actions:
-        if action.action == 'transcode':
-            # TODO: make sure the directory exists
-            cmd = ['opusenc', action.filepath, action.destpath]
-            returncode = subprocess.call(cmd, stderr=subprocess.DEVNULL)
-            if returncode != 0:
-                print("error: command failed:", " ".join(command))
-        elif action.action == 'copy':
-            shutil.copy(action.filepath, action.destpath)
-        else:
-            print("error: unknown action:", str(action))
+        doaction(action, args)
+
+def doaction(action, args):
+    if action.action == 'mkdir':
+        dirs = []
+        path = action.destpath
+        while path != args.source and not os.path.exists(path):
+            path, dir = os.path.split(path)
+            dirs.append(dir)
+        while dirs:
+            dir = dirs.pop()
+            path = joinpath(path, dir)
+            try:
+                os.mkdir(path)
+            except Exception as e:
+                print("error: mkdir failed:", e)
+                break
+    elif action.action == 'transcode':
+        # TODO: make sure the directory exists
+        cmd = ['opusenc', '--bitrate', args.bitrate, action.filepath, action.destpath]
+        returncode = subprocess.call(cmd, stderr=subprocess.DEVNULL)
+        if returncode != 0:
+            print("error: command failed:", " ".join(command))
+    elif action.action == 'copy':
+        shutil.copy(action.filepath, action.destpath)
+    else:
+        print("error: unknown action:", str(action))
 
 def dodir(sourcedir, destdir, files):
     """Return a list of actions to transcode files from sourcedir to destdir"""
@@ -99,6 +119,9 @@ def transcode(filepath, destpath):
 
 def copy(filepath, destpath):
     return Action('copy', filepath, destpath)
+
+def mkdir(path):
+    return Action('mkdir', "", path)
 
 def replacepath(path, old, new):
     if path.startswith(old):

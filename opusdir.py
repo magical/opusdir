@@ -1,6 +1,8 @@
 # opusdir - transcode a directory tree from FLAC to Opus
 # requires Python 3.3
 
+# TODO: don't encode files which are newer than the source file
+
 import argparse
 import os
 import queue
@@ -20,7 +22,7 @@ class RunTestsAction(argparse.Action):
             option_strings=option_strings,
             dest=dest,
             default=default,
-            nargs='*',
+            nargs=0,
             help=help)
     def __call__(self, parser, namespace, values, option_string=None):
         args = sys.argv[:]
@@ -62,7 +64,7 @@ def main():
     # Do each action
     for action in actions:
         if args.dry_run or args.verbose:
-            print(action)
+            print(str(action))
         if not args.dry_run:
             doaction(action, q, args)
 
@@ -126,7 +128,7 @@ def dotranscode(action, args):
     returncode = subprocess.call(cmd, stderr=subprocess.DEVNULL)
     if returncode != 0:
         # TODO: get stderr
-        print("error: command failed:", " ".join(command))
+        print("error: command failed:", " ".join(cmd))
         return
 
     try:
@@ -134,7 +136,6 @@ def dotranscode(action, args):
     except OSError as e:
         print("error: rename failed: %s: %s" % action.destpath, e)
         return
-
 
 def get_transcode_actions_for_dir(sourcedir, destdir, files):
     """Return a list of actions to transcode files from sourcedir to destdir"""

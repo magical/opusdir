@@ -2,11 +2,14 @@
 
 import argparse
 import os
+import queue
 import shutil
 import subprocess
 import sys
+import threading
 import unittest
 
+num_workers_default = 2
 opusenc_path = "/home/andrew/bin/opusenc"
 cover_names = ['cover.jpg', 'cover.png']
 
@@ -30,6 +33,7 @@ def main():
     parser.add_argument("-b", "--bitrate", type=int, default=96, help="opus bitrate in kb/s")
     parser.add_argument("-n", "--dry-run", action='store_true', help="don't do anything")
     parser.add_argument("-v", "--verbose", action='store_true', help="print actions")
+    parser.add_argument("-w", "--workers", type=int, default=num_workers_default, help="number of encode workers")
     parser.add_argument("source", help="the source directory")
     parser.add_argument("dest", help="the destination directory")
     args = parser.parse_args()
@@ -44,13 +48,41 @@ def main():
             actions.append(mkdir(destdir))
         actions += subactions
 
+    workers = []
+
+    # Start the workers
+    q = queue.Queue(args.workers)
+    if not args.dry_run:
+        for _ in range(args.workers):
+            t = threading.Thread(target=worker, args=(q, args))
+            t.start()
+            workers.append(t)
+
+    # Do each action
     for action in actions:
         if args.dry_run or args.verbose:
             print(action)
         if not args.dry_run:
-            doaction(action, args)
+            doaction(action, q, args)
 
-def doaction(action, args):
+    # Wait for the queue to empty
+    q.join()
+
+    # Stop the workers
+    for t in workers:
+        q.put(None)
+    for t in workers:
+        t.join()
+
+def worker(queue, args):
+    while True:
+        action = queue.get()
+        if action is None:
+            break
+        dotranscode(action, args)
+        queue.task_done()
+
+def doaction(action, queue, args):
     if action.action == 'mkdir':
         dirs = []
         path = os.path.normpath(action.destpath)
@@ -67,15 +99,21 @@ def doaction(action, args):
                 print("error: mkdir failed:", e)
                 break
     elif action.action == 'transcode':
-        # TODO: make sure the directory exists
-        cmd = [opusenc_path, '--quiet', '--bitrate', str(args.bitrate), action.filepath, action.destpath]
-        returncode = subprocess.call(cmd, stderr=subprocess.DEVNULL)
-        if returncode != 0:
-            print("error: command failed:", " ".join(command))
+        queue.put(action)
     elif action.action == 'copy':
         shutil.copy(action.filepath, action.destpath)
     else:
         print("error: unknown action:", str(action))
+
+def dotranscode(action, args):
+    if action.action != 'transcode':
+        print('error: dotranscode got non-transcode action:', action)
+        return
+    # TODO: make sure the directory exists
+    cmd = [opusenc_path, '--quiet', '--bitrate', str(args.bitrate), action.filepath, action.destpath]
+    returncode = subprocess.call(cmd, stderr=subprocess.DEVNULL)
+    if returncode != 0:
+        print("error: command failed:", " ".join(command))
 
 def get_transcode_actions_for_dir(sourcedir, destdir, files):
     """Return a list of actions to transcode files from sourcedir to destdir"""

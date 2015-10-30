@@ -36,7 +36,7 @@ def main():
     for sourcedir, dirs, files in os.walk(args.source):
         dirs.sort() # traverse dirs in alphabetical order
         files.sort()
-        destdir = replacepath(dirname, args.source, args.dest)
+        destdir = replacepath(sourcedir, args.source, args.dest)
         subactions = dodir(sourcedir, destdir, files)
         if subactions and not os.path.exists(destdir):
             actions.append(mkdir(destdir))
@@ -53,8 +53,9 @@ def main():
 def doaction(action, args):
     if action.action == 'mkdir':
         dirs = []
-        path = action.destpath
-        while path != args.source and not os.path.exists(path):
+        path = os.path.normpath(action.destpath)
+        root = os.path.normpath(args.source)
+        while path != root and not os.path.exists(path):
             path, dir = os.path.split(path)
             dirs.append(dir)
         while dirs:
@@ -124,8 +125,14 @@ def mkdir(path):
     return Action('mkdir', "", path)
 
 def replacepath(path, old, new):
-    if path.startswith(old):
-        return joinpath(new, path[len(old):])
+    old = os.path.normpath(old)
+    new = os.path.normpath(new)
+    path = os.path.normpath(path)
+    if path == old:
+        return new
+    elif path.startswith(old+"/"):
+        path = path[len(old+"/"):]
+        return joinpath(new, path)
     else:
         raise ValueError("path does not start with %s: %s" % (old, path))
 

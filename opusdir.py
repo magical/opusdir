@@ -85,26 +85,32 @@ def worker(queue, args):
 
 def doaction(action, queue, args):
     if action.action == 'mkdir':
-        dirs = []
-        path = os.path.normpath(action.destpath)
-        root = os.path.normpath(args.source)
-        while path != root and not os.path.exists(path):
-            path, dir = os.path.split(path)
-            dirs.append(dir)
-        while dirs:
-            dir = dirs.pop()
-            path = joinpath(path, dir)
-            try:
-                os.mkdir(path)
-            except Exception as e:
-                print("error: mkdir failed:", e)
-                break
+        domkdir(action, args.source)
     elif action.action == 'transcode':
         queue.put(action)
     elif action.action == 'copy':
         shutil.copy(action.filepath, action.destpath)
     else:
         print("error: unknown action:", str(action))
+
+def domkdir(action, root):
+    """Make all missing directories up to root"""
+    dirs = []
+    path = os.path.normpath(action.destpath)
+    root = os.path.normpath(root)
+    while path != root and not os.path.exists(path):
+        path, dir = os.path.split(path)
+        dirs.append(dir)
+    while dirs:
+        dir = dirs.pop()
+        path = joinpath(path, dir)
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            pass
+        except OSError as e:
+            print("error: mkdir failed:", e)
+            break
 
 def dotranscode(action, args):
     if action.action != 'transcode':

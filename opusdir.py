@@ -1,4 +1,5 @@
 # opusdir - transcode a directory tree from FLAC to Opus
+# requires Python 3.3
 
 import argparse
 import os
@@ -109,11 +110,25 @@ def dotranscode(action, args):
     if action.action != 'transcode':
         print('error: dotranscode got non-transcode action:', action)
         return
+
     # TODO: make sure the directory exists
-    cmd = [opusenc_path, '--quiet', '--bitrate', str(args.bitrate), action.filepath, action.destpath]
+
+    # Instead of writing directly to $destpath, write to $destpath.partial,
+    # so that if we crash we don't leave partially-encoded files laying around
+    tmppath = action.destpath + ".partial"
+    cmd = [opusenc_path, '--quiet', '--bitrate', str(args.bitrate), action.filepath, tmppath]
     returncode = subprocess.call(cmd, stderr=subprocess.DEVNULL)
     if returncode != 0:
+        # TODO: get stderr
         print("error: command failed:", " ".join(command))
+        return
+
+    try:
+        os.replace(tmppath, action.destpath)
+    except OSError as e:
+        print("error: rename failed: %s: %s" % action.destpath, e)
+        return
+
 
 def get_transcode_actions_for_dir(sourcedir, destdir, files):
     """Return a list of actions to transcode files from sourcedir to destdir"""

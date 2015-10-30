@@ -7,6 +7,7 @@ import subprocess
 import sys
 import unittest
 
+opusenc_path = "/home/andrew/bin/opusenc"
 cover_names = ['cover.jpg', 'cover.png']
 
 class RunTestsAction(argparse.Action):
@@ -68,7 +69,7 @@ def doaction(action, args):
                 break
     elif action.action == 'transcode':
         # TODO: make sure the directory exists
-        cmd = ['opusenc', '--bitrate', str(args.bitrate), action.filepath, action.destpath]
+        cmd = [opusenc_path, '--quiet', '--bitrate', str(args.bitrate), action.filepath, action.destpath]
         returncode = subprocess.call(cmd, stderr=subprocess.DEVNULL)
         if returncode != 0:
             print("error: command failed:", " ".join(command))

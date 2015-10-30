@@ -27,8 +27,9 @@ class RunTestsAction(argparse.Action):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--test", action=RunTestsAction, help="run unit tests")
-    parser.add_argument("-n", "--dry-run", action='store_true', help="don't do anything")
     parser.add_argument("-b", "--bitrate", type=int, default=96, help="opus bitrate in kb/s")
+    parser.add_argument("-n", "--dry-run", action='store_true', help="don't do anything")
+    parser.add_argument("-v", "--verbose", action='store_true', help="print actions")
     parser.add_argument("source", help="the source directory")
     parser.add_argument("dest", help="the destination directory")
     args = parser.parse_args()
@@ -43,13 +44,11 @@ def main():
             actions.append(mkdir(destdir))
         actions += subactions
 
-    if args.dry_run:
-        for action in actions:
-            print(action)
-        return
-
     for action in actions:
-        doaction(action, args)
+        if args.dry_run or args.verbose:
+            print(action)
+        if not args.dry_run:
+            doaction(action, args)
 
 def doaction(action, args):
     if action.action == 'mkdir':
@@ -113,8 +112,8 @@ class Action(object):
         return "Action(%r, %r, %r)" % (self.action, self.filepath, self.destpath)
     def __str__(self):
         if self.filepath:
-            return "would %s %s to %s" % (self.action, self.filepath, self.destpath)
-        return "would %s %s" % (self.action, self.destpath)
+            return "%s %s to %s" % (self.action, self.filepath, self.destpath)
+        return "%s %s" % (self.action, self.destpath)
 
 def transcode(filepath, destpath):
     return Action('transcode', filepath, destpath)

@@ -38,7 +38,7 @@ def main():
         dirs.sort() # traverse dirs in alphabetical order
         files.sort()
         destdir = replacepath(sourcedir, args.source, args.dest)
-        subactions = dodir(sourcedir, destdir, files)
+        subactions = get_transcode_actions_for_dir(sourcedir, destdir, files)
         if subactions and not os.path.exists(destdir):
             actions.append(mkdir(destdir))
         actions += subactions
@@ -78,7 +78,7 @@ def doaction(action, args):
     else:
         print("error: unknown action:", str(action))
 
-def dodir(sourcedir, destdir, files):
+def get_transcode_actions_for_dir(sourcedir, destdir, files):
     """Return a list of actions to transcode files from sourcedir to destdir"""
     actions = []
     has_music = False
@@ -154,6 +154,7 @@ def joinpath(a, *p):
 
 class TestCase(unittest.TestCase):
     def test(self):
+        dodir = get_transcode_actions_for_dir
         self.assertEqual(dodir('a', 'transcode/a', ['foo.flac']),
             [ transcode("a/foo.flac", "transcode/a/foo.opus") ])
         self.assertEqual(dodir('a', 'transcode/a', ['foo.mp3']), [])

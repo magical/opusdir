@@ -47,6 +47,7 @@ def main():
         files.sort()
         destdir = replacepath(sourcedir, args.source, args.dest)
         subactions = get_transcode_actions_for_dir(sourcedir, destdir, files)
+        subactions = filter_actions(subactions)
         if subactions and not os.path.exists(destdir):
             actions.append(mkdir(destdir))
         actions += subactions
@@ -159,6 +160,26 @@ def get_transcode_actions_for_dir(sourcedir, destdir, files):
 
     return actions
 
+def filter_actions(old_actions, *, _getmtime=os.path.getmtime):
+    """Filter out copy or transcode actions where the destination file exists
+    and is newer than the source file
+    """
+    def f(action):
+        if action.action == 'transcode' or action.action == 'copy':
+            try:
+                desttime = _getmtime(action.destpath)
+                sourcetime = _getmtime(action.filepath)
+            except FileNotFoundError:
+                return True
+            except OSError as e:
+                print("error: stat failed:", e)
+                return False
+
+            return sourcetime > desttime
+        return True
+    actions = list(filter(f, old_actions))
+    return actions
+
 class Action(object):
     def __init__(self, action, filepath, destpath):
         self.action = action
@@ -214,11 +235,35 @@ def joinpath(a, *p):
 class TestCase(unittest.TestCase):
     def test(self):
         dodir = get_transcode_actions_for_dir
-        self.assertEqual(dodir('a', 'transcode/a', ['foo.flac']),
-            [ transcode("a/foo.flac", "transcode/a/foo.opus") ])
-        self.assertEqual(dodir('a', 'transcode/a', ['foo.mp3']), [])
-        self.assertEqual(dodir('a', 'transcode/a', ['foo.flac', 'cover.png']),
-            [ transcode("a/foo.flac", "transcode/a/foo.opus"), copy("a/cover.png", "transcode/a/cover.png") ])
+        self.assertEqual(dodir('a', 'b', ['foo.flac']),
+            [ transcode("a/foo.flac", "b/foo.opus") ])
+        self.assertEqual(dodir('a', 'b', ['foo.mp3']), [])
+        self.assertEqual(dodir('a', 'b', ['foo.flac', 'cover.png']),
+            [ transcode("a/foo.flac", "b/foo.opus"), copy("a/cover.png", "b/cover.png") ])
+
+    def test_filter(self):
+        def getmtime(name):
+            if 'missing' in name:
+                raise FileNotFoundError(name)
+            return int(os.path.basename(name))
+
+        def assert_keep(x):
+            self.assertEqual(filter_actions(x, _getmtime=getmtime), x)
+        def assert_drop(x):
+            self.assertEqual(filter_actions(x, _getmtime=getmtime), [])
+
+        for act in [transcode, copy]:
+            # source file is newer than dest -> keep
+            assert_keep([act("a/20151111", "b/20021111")])
+            # source file is older than dest -> drop
+            assert_drop([act("a/20021111", "b/20151111")])
+            # source file is same age as dest -> drop
+            assert_drop([act("a/20021111", "b/20021111")])
+            # dest is missing -> keep
+            assert_keep([act("a/20021111", "b/missing")])
+
+        # keep mkdir
+        assert_keep([mkdir("a/20021111")])
 
 if __name__ == '__main__':
     main()

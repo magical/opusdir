@@ -1,8 +1,6 @@
 # opusdir - transcode a directory tree from FLAC to Opus
 # requires Python 3.3
 
-# TODO: don't encode files which are newer than the source file
-
 import argparse
 import os
 import queue

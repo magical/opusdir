@@ -37,6 +37,7 @@ def main():
     parser.add_argument("-n", "--dry-run", action='store_true', help="don't do anything")
     parser.add_argument("-v", "--verbose", action='store_true', help="print actions")
     parser.add_argument("-w", "--workers", type=int, default=num_workers_default, help="number of encode workers")
+    parser.add_argument("--delete", action='store_true', help="delete files in dest that don't belong")
     parser.add_argument("source", help="the source directory")
     parser.add_argument("dest", help="the destination directory")
     args = parser.parse_args()
@@ -51,6 +52,13 @@ def main():
         if subactions and not os.path.exists(destdir):
             actions.append(mkdir(destdir))
         actions += subactions
+
+    if args.delete:
+        for destdir, dirs, files in os.walk(args.dest):
+            dirs.sort() # traverse files and dirs in alphabetical order
+            files.sort()
+            sourcedir = replacepath(destdir, args.dest, args.source)
+            actions += get_delete_actions_for_dir(sourcedir, destdir, files)
 
     workers = []
 
@@ -93,6 +101,10 @@ def doaction(action, queue, args):
         queue.put(action)
     elif action.action == 'copy':
         shutil.copy(action.filepath, action.destpath)
+    elif action.action == 'remove':
+        pass
+    elif action.action == 'rmdir':
+        pass
     else:
         print("error: unknown action:", str(action))
 
@@ -180,6 +192,26 @@ def filter_actions(old_actions, *, _getmtime=os.path.getmtime):
     actions = list(filter(f, old_actions))
     return actions
 
+def get_delete_actions_for_dir(sourcedir, destdir, files):
+    """Return a list of actions to clean up the dest dir
+
+    The general idea is to sync the destdir with the sourcedir, but to play it safe, we'll only undo actions that we could have conceivably performed in the first place.
+    - delete .opus files
+    - delete .opus.partial files
+    - delete cover.png files
+    - delete directories
+    """
+    actions = []
+    for filename in files:
+        if filename.endswith('.opus.partial'):
+            actions.append(remove(joinpath(destdir, filename)))
+        elif filename.endswith('.opus'):
+            basename, ext = os.path.splitext(filename)
+            if not os.path.exists(joinpath(sourcedir, basename+".flac")):
+                actions.append(remove(joinpath(destdir, filename)))
+        # TODO: delete cover files if deleting music files
+    return actions
+
 class Action(object):
     def __init__(self, action, filepath, destpath):
         self.action = action
@@ -204,6 +236,12 @@ def copy(filepath, destpath):
 
 def mkdir(path):
     return Action('mkdir', "", path)
+
+def remove(path):
+    return Action('remove', "", path)
+
+def rmdir(path):
+    return Action('rmdir', "", path)
 
 def replacepath(path, old, new):
     old = os.path.normpath(old)

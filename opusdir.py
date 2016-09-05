@@ -94,7 +94,7 @@ def worker(queue, args):
 
 def doaction(action, queue, args):
     if action.action == 'mkdir':
-        domkdir(action, args.source)
+        domkdir(action, args.dest)
     elif action.action == 'transcode':
         queue.put(action)
     elif action.action == 'copy':

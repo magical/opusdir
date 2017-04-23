@@ -185,9 +185,9 @@ def doaction(action, args):
     elif action.action == 'copy':
         shutil.copy(action.filepath, action.destpath)
     elif action.action == 'remove':
-        pass
+        doremove(action)
     elif action.action == 'rmdir':
-        pass
+        dormdir(action)
     else:
         print("error: unknown action:", str(action))
 
@@ -209,6 +209,29 @@ def domkdir(action, root):
         except OSError as e:
             print("error: mkdir failed:", e)
             break
+
+def doremove(action):
+    """Remove a file"""
+    path = os.path.normpath(action.destpath)
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        # it's already gone?
+        pass
+    except OSError as e:
+        print("error: remove failed:", e)
+
+def dormdir(action):
+    """Remove a directory"""
+    path = os.path.normpath(action.destpath)
+    try:
+        os.rmdir(path)
+    except FileNotFoundError:
+        # it's already gone?
+        pass
+    except OSError as e:
+        print("error: remove failed:", e)
+
 
 def dotranscode(action, args):
     if action.action != 'transcode':
@@ -391,9 +414,9 @@ class TestCase(unittest.TestCase):
         def file(path, mtime=0):
             return File(path, os.path.basename(path), mtime=mtime)
 
-        def test(msg, srcfiles, dstfiles, actions):
+        def test(msg, srcfiles, dstfiles, actions, *, delete=True):
             with self.subTest(msg):
-                self.assertEqual(sync_dirs('a', 'b', srcfiles, dstfiles, delete=True), actions)
+                self.assertEqual(sync_dirs('a', 'b', srcfiles, dstfiles, delete=delete), actions)
 
         test('transcodes flac files',
             [file('a/foo.flac')],
@@ -424,6 +447,13 @@ class TestCase(unittest.TestCase):
             [file('b/foo.opus'), file('b/bar.opus.partial'), file('b/cover.jpg')],
             [remove("b/foo.opus"), remove("b/bar.opus.partial"),
              remove("b/cover.jpg"), rmdir('b')],
+        )
+
+        test('deletes nothing when delete=False',
+            [],
+            [file('b/foo.opus'), file('b/bar.opus.partial'), file('b/cover.jpg')],
+            [],
+            delete=False,
         )
 
         test('transcode: source is newer than dest -> keep',

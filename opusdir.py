@@ -52,12 +52,15 @@ def main():
     dirset = collections.defaultdict(list)
     for sourceroot in args.source:
         for sourcedir, dirs, files in os.walk(sourceroot):
+            if should_exclude(sourcedir, args.exclude):
+                dirs[:] = []
+                continue
             if should_include(sourcedir, files):
                 assert sourcedir.startswith(sourceroot)
                 dirname = replacepath(sourcedir, sourceroot, '.')
                 dirset.setdefault(dirname, []).append(sourceroot)
 
-    # 1a. warn about for duplicate directories
+    # 1b. warn about for duplicate directories
     ignored = []
     for sourcedir in sorted(dirset.keys()):
         roots = dirset[sourcedir]
@@ -112,6 +115,8 @@ def main():
             workers.append(t)
 
     # Do each action
+    # XXX if mkdir fails, we probably shouldn't try to
+    #     transcode anything to that directory
     for action in actions:
         if args.dry_run or args.verbose:
             print(str(action))
@@ -130,6 +135,13 @@ def main():
         q.put(None)
     for t in workers:
         t.join()
+
+def should_exclude(dirname, excludes):
+    """Returns true if the directory should be excluded when walking the source tree"""
+    if excludes:
+        if dirname in excludes:
+            return True
+    return False
 
 def should_include(dirname, files):
     """Returns true if the directory should be included in the source set."""

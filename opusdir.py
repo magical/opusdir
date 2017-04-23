@@ -2,9 +2,11 @@
 # requires Python 3.3
 
 import argparse
+import collections
 import os
 import queue
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -36,31 +38,64 @@ def main():
     parser.add_argument("-v", "--verbose", action='store_true', help="print actions")
     parser.add_argument("-w", "--workers", type=int, default=num_workers_default, help="number of encode workers")
     parser.add_argument("--delete", action='store_true', help="delete files in dest that don't belong")
-    parser.add_argument("source", help="the source directory")
+    parser.add_argument("--exclude", action='append', help="paths to exclude")
+    parser.add_argument("source", nargs='+', help="source directories")
     parser.add_argument("dest", help="the destination directory")
     args = parser.parse_args()
 
+    # 1. build source set
+    #    the source set is every directory under a source directory
+    #    which contains any music files
+    #    TODO: and is not excluded
+
+    # {dir name: [source root]}
+    dirset = collections.defaultdict(list)
+    for sourceroot in args.source:
+        for sourcedir, dirs, files in os.walk(sourceroot):
+            if should_include(sourcedir, files):
+                assert sourcedir.startswith(sourceroot)
+                dirname = replacepath(sourcedir, sourceroot, '.')
+                dirset.setdefault(dirname, []).append(sourceroot)
+
+    # 1a. warn about for duplicate directories
+    ignored = []
+    for sourcedir in sorted(dirset.keys()):
+        roots = dirset[sourcedir]
+        if len(roots) > 1:
+            print("warning: skipping directory present in multiple sources: %s" % sourcedir)
+            for root in roots:
+                print("\t(source directory: %s)" % joinpath(root, sourcedir))
+            ignored.append(sourcedir)
+    for sourcedir in ignored:
+        del dirset[sourcedir]
+
+    sourceset = sorted(dirset.keys())
+
+    # 2. emit mkdir actions
     actions = []
-    for sourcedir, dirs, files in os.walk(args.source):
-        dirs.sort() # traverse dirs in alphabetical order
-        files.sort()
-        destdir = replacepath(sourcedir, args.source, args.dest)
-        subactions = get_transcode_actions_for_dir(sourcedir, destdir, files)
-        subactions = filter_actions(subactions)
-        if subactions and not os.path.exists(destdir):
+    for dir in sourceset:
+        destdir = joinpath(args.dest, dir)
+        if not os.path.exists(destdir):
             actions.append(mkdir(destdir))
+
+    # 3. sync each directory in the source set with the dest directory
+    for dirname in sorted(dirset.keys()):
+        root = dirset[dirname]
+        sourcedir = joinpath(root[0], dirname)
+        destdir = joinpath(args.dest, dirname)
+
+        srcfiles = get_files(sourcedir)
+        destfiles = get_files(destdir)
+
+        subactions = sync_dirs(sourcedir, destdir, srcfiles, destfiles)
         actions += subactions
 
-    if args.delete:
-        for destdir, dirs, files in os.walk(args.dest):
-            dirs.sort() # traverse files and dirs in alphabetical order
-            files.sort()
-            sourcedir = replacepath(destdir, args.dest, args.source)
-            actions += get_delete_actions_for_dir(sourcedir, destdir, files)
+    # XXX delete directories not present in dirset
 
-    workers = []
+    # 4. do the actions
 
     # Start the workers
+    workers = []
     q = queue.Queue(args.workers)
     if not args.dry_run:
         for _ in range(args.workers):
@@ -73,7 +108,11 @@ def main():
         if args.dry_run or args.verbose:
             print(str(action))
         if not args.dry_run:
-            doaction(action, q, args)
+            if action.action == 'transcode':
+                # farm transcode actions out to worker threads
+                q.put(action)
+            else:
+                doaction(action, args)
 
     # Wait for the queue to empty
     q.join()
@@ -84,19 +123,56 @@ def main():
     for t in workers:
         t.join()
 
+def should_include(dirname, files):
+    """Returns true if the directory should be included in the source set."""
+    for file in files:
+        if file.endswith('.flac'):
+            return True
+    return False
+
+class File(object):
+    def __init__(self, path, name, mtime):
+        self.path = path
+        self.name = name
+        self.mtime = mtime
+    def __hash__(self):
+        return hash(self.path)
+    def __eq__(self, other):
+        if not isinstance(other, File):
+            return NotImplemented
+        return self.path == other.path
+    def __repr__(self):
+        return 'File(%s, mtime=%s)' % (repr(self.path), repr(self.mtime))
+
+def get_files(path):
+    """Return a list of File objects for each file in the given directory."""
+    files = []
+    path = os.path.normpath(path)
+    # XXX os.scandir
+    try:
+        filenames = os.listdir(path)
+    except FileNotFoundError:
+        return []
+    for filename in filenames:
+        filepath = joinpath(path, filename)
+        st = os.stat(filepath)
+        if stat.S_ISREG(st.st_mode):
+            files.append(File(filepath, filename, st.st_mtime))
+    return files
+
 def worker(queue, args):
     while True:
         action = queue.get()
         if action is None:
             break
-        dotranscode(action, args)
+        doaction(action, args)
         queue.task_done()
 
-def doaction(action, queue, args):
+def doaction(action, args):
     if action.action == 'mkdir':
         domkdir(action, args.dest)
     elif action.action == 'transcode':
-        queue.put(action)
+        dotranscode(action, args)
     elif action.action == 'copy':
         shutil.copy(action.filepath, action.destpath)
     elif action.action == 'remove':
@@ -148,18 +224,76 @@ def dotranscode(action, args):
         print("error: rename failed: %s: %s" % action.destpath, e)
         return
 
+def sync_dirs(srcdir, destdir, srcfiles, destfiles):
+    """Return a list of actions to transcode files from sourcedir to destdir
+
+    To delete a directory, pass an empty srcfiles.
+    """
+    actions = []
+    srcmap = {file.name: file for file in srcfiles}
+    destmap = {file.name: file for file in destfiles}
+    destset = set()
+
+    # Transcode .flac files
+    for file in srcfiles:
+        if file.path.endswith('.flac'):
+            destname = replace_ext(file.name, '.flac', '.opus')
+            destpath = joinpath(destdir, destname)
+            destset.add(destname)
+            if destname not in destmap or destmap[destname].mtime < file.mtime:
+                actions.append(transcode(file.path, destpath))
+
+    # Copy cover file
+    for name in cover_names:
+        if name in srcmap:
+            file = srcmap[name]
+            destpath = joinpath(destdir, file.name)
+            destset.add(file.name)
+            if name not in destmap or destmap[name].mtime < file.mtime:
+                actions.append(copy(file.path, destpath))
+            break
+
+    # Clean up the destination directory
+    # by deleting files which are not in the destset.
+    # To play it safe, we'll only delete files that we could
+    # have conceivably created in the first place.
+    #
+    # - .opus files
+    # - .opus.partial files
+    # - cover files
+
+    for file in destfiles:
+        if file.name not in destset and can_delete(file.name):
+            actions.append(remove(file.path))
+    if actions and not destset:
+        actions.append(rmdir(destdir))
+
+    return actions
+
+def can_delete(filename):
+    if filename.endswith(".opus.partial"):
+        return True
+    if filename.endswith(".opus"):
+        return True
+    if filename in cover_names:
+        return True
+    return False
+
 def get_transcode_actions_for_dir(sourcedir, destdir, files):
     """Return a list of actions to transcode files from sourcedir to destdir"""
     actions = []
     has_music = False
+
+    # Transcode .flac files
     for name in files:
         if name.endswith('.flac'):
             has_music = True
-            basename, ext = os.path.splitext(name)
+            destname = replace_ext(name, '.flac', '.opus')
             filepath = joinpath(sourcedir, name)
-            destpath = joinpath(destdir, basename + ".opus")
+            destpath = joinpath(destdir, destname)
             actions.append(transcode(filepath, destpath))
 
+    # Copy cover files
     if has_music:
         for name in cover_names:
             if name in files:
@@ -193,7 +327,7 @@ def filter_actions(old_actions, *, _getmtime=os.path.getmtime):
 def get_delete_actions_for_dir(sourcedir, destdir, files):
     """Return a list of actions to clean up the dest dir
 
-    The general idea is to sync the destdir with the sourcedir, but to play it safe, we'll only undo actions that we could have conceivably performed in the first place.
+    To play it safe, we'll only delete files that we could have conceivably created in the first place.
     - delete .opus files
     - delete .opus.partial files
     - delete cover.png files
@@ -207,7 +341,12 @@ def get_delete_actions_for_dir(sourcedir, destdir, files):
             basename, ext = os.path.splitext(filename)
             if not os.path.exists(joinpath(sourcedir, basename+".flac")):
                 actions.append(remove(joinpath(destdir, filename)))
-        # TODO: delete cover files if deleting music files
+        elif filename in cover_names:
+            # TODO: delete cover files only if deleting music files?
+            if not os.path.exists(joinpath(sourcedir, filename)):
+                actions.append(remove(joinpath(destdir, filename)))
+    if not os.path.exists(sourcedir):
+        actions.append(rmdir(destdir))
     return actions
 
 class Action(object):
@@ -216,6 +355,8 @@ class Action(object):
         self.filepath = filepath
         self.destpath = destpath
     def __eq__(self, other):
+        if not isinstance(other, Action):
+            return NotImplemented
         return (self.action == other.action and
                 self.filepath == other.filepath and
                 self.destpath == other.destpath)
@@ -241,35 +382,128 @@ def remove(path):
 def rmdir(path):
     return Action('rmdir', "", path)
 
+def replace_ext(path, old, new):
+    """Replaces the file extension of a path.
+
+    If path does not end with the old file extension, simply append the new file extenson.
+    """
+    if path.endswith(old):
+        path = path[:len(path)-len(old)]
+    return path + new
+
 def replacepath(path, old, new):
     old = os.path.normpath(old)
     new = os.path.normpath(new)
     path = os.path.normpath(path)
     if path == old:
         return new
-    elif path.startswith(old+"/"):
-        path = path[len(old+"/"):]
+    elif path.startswith(old+os.sep):
+        path = path[len(old+os.sep):]
+        return joinpath(new, path)
+    elif old == '.':
         return joinpath(new, path)
     else:
         raise ValueError("path does not start with %s: %s" % (old, path))
 
-def joinpath(a, *p):
-    """Join two or more pathname components. Unlike os.path.join, doesn't treat absolute paths specially. Also normalizes the path after joining.
+def joinpath(a, *p, sep=os.sep):
+    """Join two or more pathname components.
 
-    In other words, joinpath("a", "/b") is "a/b", not "/b".
+    Unlike os.path.join, joinpath doesn't treat absolute paths specially,
+    so joinpath("a", "/b") is "a/b", not "/b".
     """
-    sep = os.path.sep
     path = a
     for b in p:
         if not path or path.endswith(sep):
             path += b
         else:
             path += sep + b
-    return path
-    #return os.path.normpath(path)
+    return os.path.normpath(path)
 
 class TestCase(unittest.TestCase):
-    def test(self):
+    def test_should_include(self):
+        self.assertTrue(should_include('a', ['foo.flac']))
+        self.assertFalse(should_include('a', ['']))
+        self.assertFalse(should_include('a', ['foo.opus']))
+        self.assertFalse(should_include('a', ['foo.mp3']))
+        self.assertTrue(should_include('a', ['cover.png', 'foo.flac']))
+        self.assertFalse(should_include('a', ['cover.png', 'foo.mp3']))
+
+    def test_sync_dirs(self):
+        def file(path, mtime=0):
+            return File(path, os.path.basename(path), mtime=mtime)
+
+        def test(msg, srcfiles, dstfiles, actions):
+            with self.subTest(msg):
+                self.assertEqual(sync_dirs('a', 'b', srcfiles, dstfiles), actions)
+
+        test('transcodes flac files',
+            [file('a/foo.flac')],
+            [],
+            [transcode("a/foo.flac", "b/foo.opus")],
+        )
+
+        test('does not transcode or copy mp3 files',
+            [file('a/foo.mp3')],
+            [],
+            [],
+        )
+
+        test('copies cover art',
+            [file('a/foo.flac'), file('a/cover.png')],
+            [],
+            [transcode("a/foo.flac", "b/foo.opus"), copy("a/cover.png", "b/cover.png"),]
+        )
+
+        test('prefers cover.jpg to cover.png',
+            [file('a/cover.png'), file('a/cover.jpg')],
+            [],
+            [copy("a/cover.jpg", "b/cover.jpg")],
+        )
+
+        test('deletes opus files, partial files, and cover art',
+            [],
+            [file('b/foo.opus'), file('b/bar.opus.partial'), file('b/cover.jpg')],
+            [remove("b/foo.opus"), remove("b/bar.opus.partial"),
+             remove("b/cover.jpg"), rmdir('b')],
+        )
+
+        test('transcode: source is newer than dest -> keep',
+            [file('a/foo.flac', 2015)],
+            [file('b/foo.opus', 2002)],
+            [transcode('a/foo.flac', 'b/foo.opus')],
+        )
+
+        test('transcode: source is older than dest -> drop',
+            [file('a/foo.flac', 2002)],
+            [file('b/foo.opus', 2015)],
+            [],
+        )
+
+        test('transcode: source is same age as dest -> drop',
+            [file('a/foo.flac', 2015)],
+            [file('b/foo.opus', 2015)],
+            [],
+        )
+
+        test('copy: source is newer than dest -> keep',
+            [file('a/cover.png', 2015)],
+            [file('b/cover.png', 2002)],
+            [copy('a/cover.png', 'b/cover.png')],
+        )
+
+        test('copy: source is older than dest -> drop',
+            [file('a/cover.png', 2002)],
+            [file('b/cover.png', 2015)],
+            [],
+        )
+
+        test('copy: source is older than dest -> drop',
+            [file('a/cover.png', 2015)],
+            [file('b/cover.png', 2015)],
+            [],
+        )
+
+    def test_transcode(self):
         dodir = get_transcode_actions_for_dir
         self.assertEqual(dodir('a', 'b', ['foo.flac']),
             [ transcode("a/foo.flac", "b/foo.opus") ])
@@ -300,6 +534,25 @@ class TestCase(unittest.TestCase):
 
         # keep mkdir
         assert_keep([mkdir("a/20021111")])
+
+    def test_joinpath(self):
+        if os.sep != '/':
+            self.skipTest("only works when os.sep=='/'")
+        self.assertEqual(joinpath("a", "b"), "a/b")
+        self.assertEqual(joinpath("a/", "b"), "a/b")
+        self.assertEqual(joinpath("a", "/b"), "a/b")
+        self.assertEqual(joinpath("/a", "b"), "/a/b")
+        self.assertEqual(joinpath("/a", "/b"), "/a/b")
+        self.assertEqual(joinpath(".", "a"), "a")
+        self.assertEqual(joinpath("a", "."), "a")
+        self.assertEqual(joinpath("a", "/b"), "a/b")
+
+    def test_replacepath(self):
+        if os.sep != '/':
+            self.skipTest("only works when os.sep=='/'")
+        self.assertEqual(replacepath("a/foo", "a", "b"), "b/foo")
+        self.assertEqual(replacepath("./foo", ".", "b"), "b/foo")
+        self.assertEqual(replacepath("a/foo", "a", "."), "foo")
 
 if __name__ == '__main__':
     main()

@@ -87,12 +87,20 @@ def main():
         srcfiles = get_files(sourcedir)
         destfiles = get_files(destdir)
 
-        subactions = sync_dirs(sourcedir, destdir, srcfiles, destfiles)
+        subactions = sync_dirs(sourcedir, destdir, srcfiles, destfiles, delete=args.delete)
         actions += subactions
 
-    # XXX delete directories not present in dirset
+    # 4. walk the destination and delete any directory
+    # not present in dirset
+    if args.delete:
+        for destdir, dirs, _ in os.walk(args.dest):
+            dirs.sort()
+            dirname = replacepath(destdir, args.dest, '.')
+            if dirname not in dirset:
+                files = get_files(destdir)
+                actions += sync_dirs(destdir, destdir, [], files, delete=args.delete)
 
-    # 4. do the actions
+    # 5. do the actions
 
     # Start the workers
     workers = []
@@ -224,7 +232,7 @@ def dotranscode(action, args):
         print("error: rename failed: %s: %s" % action.destpath, e)
         return
 
-def sync_dirs(srcdir, destdir, srcfiles, destfiles):
+def sync_dirs(srcdir, destdir, srcfiles, destfiles, delete=False):
     """Return a list of actions to transcode files from sourcedir to destdir
 
     To delete a directory, pass an empty srcfiles.
@@ -261,12 +269,19 @@ def sync_dirs(srcdir, destdir, srcfiles, destfiles):
     # - .opus files
     # - .opus.partial files
     # - cover files
+    if delete:
+        for file in destfiles:
+            if file.name not in destset and can_delete(file.name):
+                actions.append(remove(file.path))
 
-    for file in destfiles:
-        if file.name not in destset and can_delete(file.name):
-            actions.append(remove(file.path))
-    if actions and not destset:
-        actions.append(rmdir(destdir))
+        # delete the directory if
+        # 1) we're deleting something
+        # 2) we aren't creating anything
+
+        # XXX but what we actually want to do is
+        #     delete the directory if the source dir doesn't exist
+        if actions and not destset:
+            actions.append(rmdir(destdir))
 
     return actions
 
@@ -434,7 +449,7 @@ class TestCase(unittest.TestCase):
 
         def test(msg, srcfiles, dstfiles, actions):
             with self.subTest(msg):
-                self.assertEqual(sync_dirs('a', 'b', srcfiles, dstfiles), actions)
+                self.assertEqual(sync_dirs('a', 'b', srcfiles, dstfiles, delete=True), actions)
 
         test('transcodes flac files',
             [file('a/foo.flac')],
@@ -502,6 +517,8 @@ class TestCase(unittest.TestCase):
             [file('b/cover.png', 2015)],
             [],
         )
+
+        # TODO: test with delete=False
 
     def test_transcode(self):
         dodir = get_transcode_actions_for_dir

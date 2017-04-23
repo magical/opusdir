@@ -220,10 +220,23 @@ def dotranscode(action, args):
     # so that if we crash we don't leave partially-encoded files laying around
     tmppath = action.destpath + ".partial"
     cmd = [opusenc_path, '--quiet', '--bitrate', str(args.bitrate), action.filepath, tmppath]
-    returncode = subprocess.call(cmd, stderr=subprocess.DEVNULL)
+    kwargs = dict(
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    with subprocess.Popen(cmd, **kwargs) as process:
+        try:
+            _, stderr = process.communicate()
+        except:
+            process.kill()
+            process.wait()
+            raise
+        returncode = process.poll()
+
     if returncode != 0:
-        # TODO: get stderr
-        print("error: command failed:", " ".join(cmd))
+        print("error: transcode failed:", stderr.decode('utf-8', 'replace').strip())
+        print("info: failed command:", " ".join(cmd))
         return
 
     try:

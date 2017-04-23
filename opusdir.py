@@ -308,76 +308,6 @@ def can_delete(filename):
         return True
     return False
 
-def get_transcode_actions_for_dir(sourcedir, destdir, files):
-    """Return a list of actions to transcode files from sourcedir to destdir"""
-    actions = []
-    has_music = False
-
-    # Transcode .flac files
-    for name in files:
-        if name.endswith('.flac'):
-            has_music = True
-            destname = replace_ext(name, '.flac', '.opus')
-            filepath = joinpath(sourcedir, name)
-            destpath = joinpath(destdir, destname)
-            actions.append(transcode(filepath, destpath))
-
-    # Copy cover files
-    if has_music:
-        for name in cover_names:
-            if name in files:
-                filepath = joinpath(sourcedir, name)
-                destpath = joinpath(destdir, name)
-                actions.append(copy(filepath, destpath))
-                break
-
-    return actions
-
-def filter_actions(old_actions, *, _getmtime=os.path.getmtime):
-    """Filter out copy or transcode actions where the destination file exists
-    and is newer than the source file
-    """
-    def f(action):
-        if action.action == 'transcode' or action.action == 'copy':
-            try:
-                desttime = _getmtime(action.destpath)
-                sourcetime = _getmtime(action.filepath)
-            except FileNotFoundError:
-                return True
-            except OSError as e:
-                print("error: stat failed:", e)
-                return False
-
-            return sourcetime > desttime
-        return True
-    actions = list(filter(f, old_actions))
-    return actions
-
-def get_delete_actions_for_dir(sourcedir, destdir, files):
-    """Return a list of actions to clean up the dest dir
-
-    To play it safe, we'll only delete files that we could have conceivably created in the first place.
-    - delete .opus files
-    - delete .opus.partial files
-    - delete cover.png files
-    - delete directories
-    """
-    actions = []
-    for filename in files:
-        if filename.endswith('.opus.partial'):
-            actions.append(remove(joinpath(destdir, filename)))
-        elif filename.endswith('.opus'):
-            basename, ext = os.path.splitext(filename)
-            if not os.path.exists(joinpath(sourcedir, basename+".flac")):
-                actions.append(remove(joinpath(destdir, filename)))
-        elif filename in cover_names:
-            # TODO: delete cover files only if deleting music files?
-            if not os.path.exists(joinpath(sourcedir, filename)):
-                actions.append(remove(joinpath(destdir, filename)))
-    if not os.path.exists(sourcedir):
-        actions.append(rmdir(destdir))
-    return actions
-
 class Action(object):
     def __init__(self, action, filepath, destpath):
         self.action = action
@@ -533,38 +463,6 @@ class TestCase(unittest.TestCase):
         )
 
         # TODO: test with delete=False
-
-    def test_transcode(self):
-        dodir = get_transcode_actions_for_dir
-        self.assertEqual(dodir('a', 'b', ['foo.flac']),
-            [ transcode("a/foo.flac", "b/foo.opus") ])
-        self.assertEqual(dodir('a', 'b', ['foo.mp3']), [])
-        self.assertEqual(dodir('a', 'b', ['foo.flac', 'cover.png']),
-            [ transcode("a/foo.flac", "b/foo.opus"), copy("a/cover.png", "b/cover.png") ])
-
-    def test_filter(self):
-        def getmtime(name):
-            if 'missing' in name:
-                raise FileNotFoundError(name)
-            return int(os.path.basename(name))
-
-        def assert_keep(x):
-            self.assertEqual(filter_actions(x, _getmtime=getmtime), x)
-        def assert_drop(x):
-            self.assertEqual(filter_actions(x, _getmtime=getmtime), [])
-
-        for act in [transcode, copy]:
-            # source file is newer than dest -> keep
-            assert_keep([act("a/20151111", "b/20021111")])
-            # source file is older than dest -> drop
-            assert_drop([act("a/20021111", "b/20151111")])
-            # source file is same age as dest -> drop
-            assert_drop([act("a/20021111", "b/20021111")])
-            # dest is missing -> keep
-            assert_keep([act("a/20021111", "b/missing")])
-
-        # keep mkdir
-        assert_keep([mkdir("a/20021111")])
 
     def test_joinpath(self):
         if os.sep != '/':

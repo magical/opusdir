@@ -166,6 +166,7 @@ def get_files(path):
         st = os.stat(filepath)
         if stat.S_ISREG(st.st_mode):
             files.append(File(filepath, filename, st.st_mtime))
+    files.sort(key=lambda x: x.name)
     return files
 
 def worker(queue, args):

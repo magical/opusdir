@@ -278,7 +278,7 @@ def dotranscode(action, args):
     try:
         os.replace(tmppath, action.destpath)
     except OSError as e:
-        print("error: rename failed: %s: %s" % action.destpath, e)
+        print("error: rename failed: %s: %s" % (action.destpath, e))
         return
 
 def sync_dirs(srcdir, destdir, srcfiles, destfiles, delete=False):
